@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="A visual tutorial on Kubernetes autoscaling: HPA, VPA, node autoscaling, metrics, and production tradeoffs." />
+  <title>Kubernetes Autoscaling — Visual Tutorial</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="shell">
+      <div class="eyebrow">☸️ Daily DevOps Visual Tutorial</div>
+      <h1>Kubernetes Autoscaling</h1>
+      <p class="lede">
+        How Kubernetes automatically changes <strong>Pods</strong>, <strong>Pod resources</strong>,
+        and <strong>cluster Nodes</strong> to match demand — explained in simple English.
+      </p>
+      <div class="hero-grid">
+        <div class="hero-card"><span class="icon">↔️</span><div><b>HPA</b><small>More / fewer Pods</small></div></div>
+        <div class="hero-card"><span class="icon">↕️</span><div><b>VPA</b><small>Bigger / smaller Pods</small></div></div>
+        <div class="hero-card"><span class="icon">🖥️</span><div><b>Node autoscaling</b><small>More / fewer Nodes</small></div></div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="toc shell" aria-label="Tutorial contents">
+    <a href="#mental-model">🧠 Mental model</a>
+    <a href="#hpa">⚙️ HPA</a>
+    <a href="#vpa">📐 VPA</a>
+    <a href="#nodes">🖥️ Node autoscaling</a>
+    <a href="#together">🔄 How they work together</a>
+    <a href="#production">💼 Production notes</a>
+    <a href="#interview">🎓 Interview notes</a>
+  </nav>
+
+  <main class="shell">
+    <section id="mental-model" class="section">
+      <div class="section-kicker">🧠 Start here</div>
+      <h2>The simplest mental model</h2>
+      <p>Kubernetes autoscaling works at different layers. The biggest mistake is thinking there is only one “autoscaler”.</p>
+      <div class="three-up">
+        <article class="concept-card"><div class="concept-head green">1</div><h3>HPA: change the number of Pods</h3><p>Traffic rises → run more replicas. Traffic drops → run fewer replicas.</p><div class="mini-equation">4 Pods → 8 Pods</div></article>
+        <article class="concept-card"><div class="concept-head purple">2</div><h3>VPA: change the size of Pods</h3><p>A Pod needs more CPU/RAM → increase its resource request.</p><div class="mini-equation">500m CPU → 1000m CPU</div></article>
+        <article class="concept-card"><div class="concept-head orange">3</div><h3>Node autoscaling: change cluster capacity</h3><p>Pods cannot fit → provision more worker Nodes.</p><div class="mini-equation">3 Nodes → 5 Nodes</div></article>
+      </div>
+      <figure class="infographic">
+        <img src="images/01-kubernetes-autoscaling-big-picture.webp" alt="Comprehensive Kubernetes autoscaling overview infographic" />
+        <figcaption>Visual study sheet 1 — HPA, VPA, node autoscaling, metrics, scale-out flow, scale-to-zero, mistakes, and interview takeaways.</figcaption>
+      </figure>
+    </section>
+
+    <section id="hpa" class="section">
+      <div class="section-kicker">⚙️ Horizontal Pod Autoscaler</div>
+      <h2>HPA changes the replica count</h2>
+      <p>HPA is a Kubernetes API resource plus a controller. It periodically reads metrics, compares them with your target, calculates a desired replica count, and updates the target workload.</p>
+      <aside class="callout info"><b>💡 In simple words:</b> HPA keeps asking: “Are my current Pods busy enough that I should add more, or quiet enough that I should remove some?”</aside>
+
+      <div class="flow-card">
+        <div class="flow-title-row">
+          <div><h3>Animated HPA control loop</h3><p>Watch the controller repeat Observe → Compare → Calculate → Update.</p></div>
+          <div class="flow-controls"><button id="playLoop" type="button">▶ Play</button><button id="pauseLoop" type="button">⏸ Pause</button><button id="resetLoop" type="button">↺ Replay</button></div>
+        </div>
+        <div class="loop-diagram" id="loopDiagram" aria-label="Animated HPA control loop">
+          <div class="loop-node active" data-step="0"><span>📊</span><b>Observe</b><small>Current metric</small></div><div class="loop-arrow">→</div>
+          <div class="loop-node" data-step="1"><span>🎯</span><b>Compare</b><small>Target metric</small></div><div class="loop-arrow">→</div>
+          <div class="loop-node" data-step="2"><span>🧮</span><b>Calculate</b><small>Desired replicas</small></div><div class="loop-arrow">→</div>
+          <div class="loop-node" data-step="3"><span>☸️</span><b>Update</b><small>Scale workload</small></div>
+        </div>
+        <div class="status-line"><span class="status-dot"></span><span id="loopStatus">Reading metrics from the Kubernetes metrics APIs.</span></div>
+      </div>
+
+      <h3>Where do HPA metrics come from?</h3>
+      <div class="grid-2">
+        <article class="soft-card"><h4>Resource metrics</h4><p>CPU and memory, typically exposed through Metrics Server / Metrics API.</p><code>metrics.k8s.io</code></article>
+        <article class="soft-card"><h4>Custom metrics</h4><p>Application-specific metrics, such as requests per second.</p><code>custom.metrics.k8s.io</code></article>
+        <article class="soft-card"><h4>External metrics</h4><p>Metrics outside the cluster, such as queue depth.</p><code>external.metrics.k8s.io</code></article>
+        <article class="soft-card"><h4>Object metrics</h4><p>A metric describing another Kubernetes object or external resource.</p></article>
+      </div>
+
+      <h3>A practical HPA example</h3>
+      <pre><button class="copy-btn" type="button">Copy</button><code>apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60</code></pre>
+      <p>Here Kubernetes tries to keep average CPU utilization around <strong>60%</strong>, while keeping the Deployment between <strong>2 and 20 Pods</strong>.</p>
+      <aside class="callout warn"><b>⚠️ Important:</b> CPU utilization is calculated relative to the Pod's CPU <code>requests</code>. Bad resource requests often lead to bad scaling decisions.</aside>
+
+      <h3>The simplified replica formula</h3>
+      <div class="formula">desired replicas ≈ ceil(current replicas × current metric / desired metric)</div>
+      <p>Example: 4 Pods at 90% CPU, target is 60% → roughly 6 desired Pods. Kubernetes also applies readiness handling, tolerances, stabilization windows, and scaling policies.</p>
+
+      <figure class="infographic">
+        <img src="images/02-hpa-how-it-works.webp" alt="Detailed infographic showing how Kubernetes HPA works" />
+        <figcaption>Visual study sheet 2 — HPA control loop, metric APIs, replica calculation, requests, scale-up/down behavior, node autoscaling relationship, and scale-to-zero.</figcaption>
+      </figure>
+    </section>
+
+    <section id="vpa" class="section">
+      <div class="section-kicker">📐 Vertical Pod Autoscaler</div>
+      <h2>VPA rightsizes CPU and memory</h2>
+      <p>VPA adjusts a workload's CPU and memory requests/limits based on actual usage. It is useful when you want Kubernetes to help answer: “How big should each Pod be?”</p>
+      <div class="compare-strip"><div><b>HPA</b><span>changes <em>how many</em> Pods</span></div><div><b>VPA</b><span>changes <em>how large</em> each Pod is</span></div></div>
+      <p>Unlike HPA, VPA is not part of the core Kubernetes API installation. It uses a CRD and must be installed separately. The stable VPA API is <code>autoscaling.k8s.io/v1</code>.</p>
+      <aside class="callout info"><b>💡 Production tip:</b> Teams often run VPA in recommendation-only mode first, inspect the suggestions, and only later allow automatic updates.</aside>
+    </section>
+
+    <section id="nodes" class="section">
+      <div class="section-kicker">🖥️ Node Autoscaling</div>
+      <h2>HPA can create Pods — but it cannot create Nodes</h2>
+      <p>This is a common interview point. HPA may increase the desired replica count, but the new Pods still need somewhere to run.</p>
+      <div class="animated-scale-card">
+        <div class="scale-stage"><div class="stage-title">1. Traffic rises</div><div class="pod-row"><span class="pod live">Pod</span><span class="pod live">Pod</span></div></div>
+        <div class="scale-arrow">→</div>
+        <div class="scale-stage"><div class="stage-title">2. HPA asks for 4 Pods</div><div class="pod-row"><span class="pod live">Pod</span><span class="pod live">Pod</span><span class="pod pending">Pending</span><span class="pod pending">Pending</span></div></div>
+        <div class="scale-arrow">→</div>
+        <div class="scale-stage"><div class="stage-title">3. Node autoscaler adds capacity</div><div class="node-row"><span class="node live">Node 1</span><span class="node live">Node 2</span><span class="node new-node">Node 3</span></div></div>
+        <div class="scale-arrow">→</div>
+        <div class="scale-stage"><div class="stage-title">4. Scheduler places Pods</div><div class="pod-row"><span class="pod live">Pod</span><span class="pod live">Pod</span><span class="pod live pop">Pod</span><span class="pod live pop">Pod</span></div></div>
+      </div>
+      <p>Kubernetes node autoscaling can provision capacity when Pods are unschedulable; common implementations include Cluster Autoscaler and Karpenter, with different implementation models.</p>
+    </section>
+
+    <section id="together" class="section">
+      <div class="section-kicker">🔄 The full production loop</div>
+      <h2>How the layers cooperate</h2>
+      <div class="sequence">
+        <div><span>1</span><b>Traffic rises</b><small>Users send more work.</small></div>
+        <div><span>2</span><b>Metrics rise</b><small>CPU, RPS, queue depth, etc.</small></div>
+        <div><span>3</span><b>HPA adds replicas</b><small>Deployment replica count increases.</small></div>
+        <div><span>4</span><b>Pods may stay Pending</b><small>Existing Nodes have no space.</small></div>
+        <div><span>5</span><b>Node autoscaler adds Nodes</b><small>Cloud capacity is provisioned.</small></div>
+        <div><span>6</span><b>Scheduler places Pods</b><small>Application capacity catches up.</small></div>
+      </div>
+      <aside class="callout success"><b>🎯 Rule of thumb:</b> HPA scales the <strong>application</strong>; node autoscaling scales the <strong>cluster capacity</strong>.</aside>
+      <h3>Scale-to-zero</h3>
+      <p>Modern Kubernetes can scale suitable HPA workloads to zero with object or external metrics when the relevant feature is available and enabled. It is especially useful for queue-driven or event-driven workloads.</p>
+      <aside class="callout warn"><b>⚠️ Cold-start caveat:</b> Kubernetes Services do not buffer HTTP requests while there are zero ready Pods. A request-driven scale-to-zero design needs buffering or a component that can tolerate startup delay.</aside>
+    </section>
+
+    <section id="production" class="section">
+      <div class="section-kicker">💼 Production engineering notes</div>
+      <h2>What senior engineers should care about</h2>
+      <div class="check-grid">
+        <article><b>✅ Set realistic resource requests</b><p>They affect scheduling and HPA CPU utilization calculations.</p></article>
+        <article><b>✅ Scale on the metric that reflects demand</b><p>CPU is not always the best signal. Queue depth or RPS can be better.</p></article>
+        <article><b>✅ Protect scale-down</b><p>Use stabilization windows and conservative policies to avoid thrashing.</p></article>
+        <article><b>✅ Test cold starts</b><p>Autoscaling only helps if your application can start quickly enough.</p></article>
+        <article><b>✅ Plan for capacity limits</b><p>Cloud quotas, Node constraints, zones, and instance availability can block scale-out.</p></article>
+        <article><b>✅ Combine with disruption controls</b><p>Graceful shutdown and PodDisruptionBudgets help maintain availability.</p></article>
+      </div>
+      <h3>Common mistakes</h3>
+      <ul class="mistakes">
+        <li>Using HPA without Metrics Server or the needed metrics adapter.</li>
+        <li>Expecting HPA to add worker Nodes.</li>
+        <li>Setting CPU requests far too low, making utilization look artificially high.</li>
+        <li>Scaling on CPU for queue-driven work when queue depth is the real demand signal.</li>
+        <li>Setting <code>minReplicas</code> too low without considering cold starts.</li>
+        <li>Running HPA and VPA against the same signal without understanding their interaction.</li>
+      </ul>
+    </section>
+
+    <section id="interview" class="section">
+      <div class="section-kicker">🎓 Interview cheat sheet</div>
+      <h2>Questions you should be able to answer</h2>
+      <details open><summary>What is the difference between HPA, VPA, and node autoscaling?</summary><p>HPA changes replica count; VPA changes Pod resource sizing; node autoscaling changes the number/capacity of Nodes.</p></details>
+      <details><summary>Why do resource requests matter to HPA?</summary><p>For CPU utilization targets, HPA compares current CPU usage against requested CPU. Incorrect requests distort utilization.</p></details>
+      <details><summary>What happens when HPA creates more Pods but the cluster is full?</summary><p>The Pods stay Pending. A node autoscaler can detect unschedulable Pods and provision more Nodes if configuration, quotas, and cloud capacity allow it.</p></details>
+      <details><summary>Can HPA scale a DaemonSet?</summary><p>No. HPA targets scalable resources that expose the scale subresource; DaemonSets are not horizontally scaled that way.</p></details>
+      <details><summary>When is CPU a bad scaling metric?</summary><p>When workload demand is better represented by a business/application signal such as queue depth, active requests, latency pressure, or jobs waiting.</p></details>
+    </section>
+
+    <section class="section references">
+      <div class="section-kicker">📚 Official references</div>
+      <h2>Learn more</h2>
+      <ul>
+        <li><a href="https://kubernetes.io/docs/concepts/workloads/autoscaling/" target="_blank" rel="noopener">Kubernetes — Autoscaling Workloads</a></li>
+        <li><a href="https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/" target="_blank" rel="noopener">Kubernetes — Horizontal Pod Autoscaling</a></li>
+        <li><a href="https://kubernetes.io/docs/concepts/workloads/autoscaling/vertical-pod-autoscale/" target="_blank" rel="noopener">Kubernetes — Vertical Pod Autoscaling</a></li>
+        <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/" target="_blank" rel="noopener">Kubernetes — Node Autoscaling</a></li>
+        <li><a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/" target="_blank" rel="noopener">Kubernetes — Resource Metrics Pipeline</a></li>
+      </ul>
+    </section>
+  </main>
+  <footer><div class="shell">Kubernetes Autoscaling Visual Tutorial · Offline-ready HTML package</div></footer>
+  <script src="script.js"></script>
+</body>
+</html>
